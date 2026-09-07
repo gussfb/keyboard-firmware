@@ -1,0 +1,15 @@
+# binários baixados (use tools/sinowisp/get.sh)
+tools/sinowisp/sinowisp
+tools/sinowisp/sinowisp.exe
+# análise pesada
+ghidra/
+*.gpr
+*.rep/
+__pycache__/
+# projetos Ghidra (regeneráveis com tools/ghidra/analyze.sh)
+analysis/**/ghidra_proj/
+# saídas intermediárias do sdas/sdld (persist.bin e persist.lst ficam versionados: o patcher usa)
+tools/persist/*.rel
+tools/persist/*.ihx
+tools/persist/*.map
+tools/persist/*.sym

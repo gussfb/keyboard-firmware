@@ -1,0 +1,355 @@
+                                      1 ; ============================================================================
+                                      2 ; Persistência de iluminação pro Draxen DN202 (Sino Wealth SH68F90, fw 9.24)
+                                      3 ; Guarda modo/cor/brilho/velocidade no setor de flash 0xD000 (nunca usado pelo
+                                      4 ; firmware) e restaura no boot. Montado com sdas8051, colocado em 0x8300 (área
+                                      5 ; livre 0x8292-0xAFFF do firmware).
+                                      6 ;
+                                      7 ; Hooks (aplicados por tools/patch_persist.py):
+                                      8 ;   0x585C  main:  "clr a; mov r0,#0x5a; mov @r0,a"  -> "lcall boot_load; nop"
+                                      9 ;   0x741F  "lcall 0x38b6" (handler de teclas/Fn)     -> "lcall hook_keys"
+                                     10 ;   0x6D05  "lcall 0x4e01" (handler USB)              -> "lcall hook_usb"
+                                     11 ; ============================================================================
+                                     12 
+                                     13         .area   CSEG (ABS)
+      008300                         14         .org    0x8300
+                                     15 
+                                     16 ; --- variáveis do firmware (IRAM) ---
+                           000076    17 MODE    = 0x76          ; 0..10 efeitos, 0x10..0x13 modos game
+                           00005A    18 COLOR   = 0x5a          ; 0..6
+                           00007A    19 BRIGHT  = 0x7a          ; 0..4
+                           000077    20 SPEED   = 0x77          ; 0..4
+                                     21 
+                                     22 ; --- rotinas do firmware ---
+                           0038B6    23 FW_KEYS   = 0x38b6
+                           004E01    24 FW_USB    = 0x4e01
+                           007F93    25 FW_ERASE  = 0x7f93      ; r7 = página (high byte)
+                           007ECA    26 FW_PROG   = 0x7eca      ; r7 = página, r5 = offset, r3 = dado
+                           0079D2    27 FW_LEDOFF = 0x79d2      ; desliga driver de LED (brilho 0)
+                                     28 
+                                     29 ; --- nosso registro em flash ---
+                           0000D0    30 SECT    = 0xd0          ; página -> 0xD000
+                           00D000    31 REC     = 0xd000        ; [A5][mode][color][bright][speed][chk]  chk = soma + 0x5A
+                           0000A5    32 MAGIC   = 0xa5
+                                     33 
+                                     34 ; --- sombra em XDATA (zerada no boot pelo firmware) ---
+                           0008F0    35 SH_MODE = 0x08f0
+                           0008F4    36 SH_FLAG = 0x08f4        ; 1 depois do boot_load
+                                     37 
+                                     38 ; ----------------------------------------------------------------------------
+      008300                         39 hook_keys:                          ; 0x8300
+      008300 12 38 B6         [24]   40         lcall   FW_KEYS
+      008303 02r83rC4         [24]   41         ljmp    check_save
+      008306                         42 hook_usb:                           ; 0x8306
+      008306 12 4E 01         [24]   43         lcall   FW_USB
+      008309 02r83rC4         [24]   44         ljmp    check_save
+                                     45 
+                                     46 ; ----------------------------------------------------------------------------
+                                     47 ; boot_load: chamado do main no lugar de "clr a; mov r0,#0x5a; mov @r0,a"
+                                     48 ; ----------------------------------------------------------------------------
+      00830C                         49 boot_load:                          ; 0x830C
+      00830C E4               [12]   50         clr     a
+      00830D F5 5A            [12]   51         mov     COLOR,a             ; semântica original
+      00830F 90 D0 00         [24]   52         mov     dptr,#REC
+      008312 E4               [12]   53         clr     a
+      008313 93               [24]   54         movc    a,@a+dptr
+      008314 B4 A5 02         [24]   55         cjne    a,#MAGIC,far1
+      008317 80 03            [24]   56         sjmp    cont1
+      008319 02r83rAB         [24]   57 far1:   ljmp    nrec
+      00831C 90 D0 01         [24]   58 cont1:  mov     dptr,#REC+1
+      00831F E4               [12]   59         clr     a
+      008320 93               [24]   60         movc    a,@a+dptr
+      008321 FA               [12]   61         mov     r2,a                ; mode
+      008322 90 D0 02         [24]   62         mov     dptr,#REC+2
+      008325 E4               [12]   63         clr     a
+      008326 93               [24]   64         movc    a,@a+dptr
+      008327 FB               [12]   65         mov     r3,a                ; color
+      008328 90 D0 03         [24]   66         mov     dptr,#REC+3
+      00832B E4               [12]   67         clr     a
+      00832C 93               [24]   68         movc    a,@a+dptr
+      00832D FC               [12]   69         mov     r4,a                ; bright
+      00832E 90 D0 04         [24]   70         mov     dptr,#REC+4
+      008331 E4               [12]   71         clr     a
+      008332 93               [24]   72         movc    a,@a+dptr
+      008333 FD               [12]   73         mov     r5,a                ; speed
+      008334 90 D0 05         [24]   74         mov     dptr,#REC+5
+      008337 E4               [12]   75         clr     a
+      008338 93               [24]   76         movc    a,@a+dptr
+      008339 FE               [12]   77         mov     r6,a                ; chk
+      00833A EA               [12]   78         mov     a,r2
+      00833B 2B               [12]   79         add     a,r3
+      00833C 2C               [12]   80         add     a,r4
+      00833D 2D               [12]   81         add     a,r5
+      00833E 24 5A            [12]   82         add     a,#0x5a
+      008340 6E               [12]   83         xrl     a,r6
+      008341 70 1A            [24]   84         jnz     far2
+                                     85         ; faixas válidas
+      008343 EA               [12]   86         mov     a,r2
+      008344 C3               [12]   87         clr     c
+      008345 94 14            [12]   88         subb    a,#0x14
+      008347 50 14            [24]   89         jnc     far2
+      008349 EB               [12]   90         mov     a,r3
+      00834A C3               [12]   91         clr     c
+      00834B 94 07            [12]   92         subb    a,#7
+      00834D 50 0E            [24]   93         jnc     far2
+      00834F EC               [12]   94         mov     a,r4
+      008350 C3               [12]   95         clr     c
+      008351 94 05            [12]   96         subb    a,#5
+      008353 50 08            [24]   97         jnc     far2
+      008355 ED               [12]   98         mov     a,r5
+      008356 C3               [12]   99         clr     c
+      008357 94 05            [12]  100         subb    a,#5
+      008359 50 02            [24]  101         jnc     far2
+      00835B 80 03            [24]  102         sjmp    apply
+      00835D 02r83rAB         [24]  103 far2:   ljmp    nrec
+      008360                        104 apply:
+                                    105         ; aplica
+      008360 8A 76            [24]  106         mov     MODE,r2
+      008362 8B 5A            [24]  107         mov     COLOR,r3
+      008364 8C 7A            [24]  108         mov     BRIGHT,r4
+      008366 8D 77            [24]  109         mov     SPEED,r5
+                                    110         ; tabelas por modo (mesma init que o handler de Fn faz)
+      008368 EA               [12]  111         mov     a,r2
+      008369 B4 01 05         [24]  112         cjne    a,#1,t6
+      00836C 12r84r65         [24]  113         lcall   init_m1
+      00836F 80 0E            [24]  114         sjmp    tdone
+      008371 B4 06 05         [24]  115 t6:     cjne    a,#6,t8
+      008374 12r84r8A         [24]  116         lcall   init_m6
+      008377 80 06            [24]  117         sjmp    tdone
+      008379 B4 08 03         [24]  118 t8:     cjne    a,#8,tdone
+      00837C 12r84rDF         [24]  119         lcall   init_m8
+      00837F                        120 tdone:
+                                    121         ; brilho (4 = default do boot, nada a fazer)
+      00837F E5 7A            [12]  122         mov     a,BRIGHT
+      008381 B4 04 02         [24]  123         cjne    a,#4,b3
+      008384 80 25            [24]  124         sjmp    nrec
+      008386 B4 03 04         [24]  125 b3:     cjne    a,#3,b2
+      008389 7F 80            [12]  126         mov     r7,#0x80
+      00838B 80 13            [24]  127         sjmp    bset
+      00838D B4 02 04         [24]  128 b2:     cjne    a,#2,b1
+      008390 7F B4            [12]  129         mov     r7,#0xb4
+      008392 80 0C            [24]  130         sjmp    bset
+      008394 B4 01 04         [24]  131 b1:     cjne    a,#1,b0
+      008397 7F E6            [12]  132         mov     r7,#0xe6
+      008399 80 05            [24]  133         sjmp    bset
+      00839B 12 79 D2         [24]  134 b0:     lcall   FW_LEDOFF
+      00839E 80 0B            [24]  135         sjmp    nrec
+      0083A0 90 FF 95         [24]  136 bset:   mov     dptr,#0xff95
+      0083A3 74 08            [12]  137         mov     a,#8
+      0083A5 F0               [24]  138         movx    @dptr,a
+      0083A6 90 FF B5         [24]  139         mov     dptr,#0xffb5
+      0083A9 EF               [12]  140         mov     a,r7
+      0083AA F0               [24]  141         movx    @dptr,a
+      0083AB                        142 nrec:
+                                    143         ; sombra = valores atuais; flag = 1
+      0083AB 90 08 F0         [24]  144         mov     dptr,#SH_MODE
+      0083AE E5 76            [12]  145         mov     a,MODE
+      0083B0 F0               [24]  146         movx    @dptr,a
+      0083B1 A3               [24]  147         inc     dptr
+      0083B2 E5 5A            [12]  148         mov     a,COLOR
+      0083B4 F0               [24]  149         movx    @dptr,a
+      0083B5 A3               [24]  150         inc     dptr
+      0083B6 E5 7A            [12]  151         mov     a,BRIGHT
+      0083B8 F0               [24]  152         movx    @dptr,a
+      0083B9 A3               [24]  153         inc     dptr
+      0083BA E5 77            [12]  154         mov     a,SPEED
+      0083BC F0               [24]  155         movx    @dptr,a
+      0083BD 90 08 F4         [24]  156         mov     dptr,#SH_FLAG
+      0083C0 74 01            [12]  157         mov     a,#1
+      0083C2 F0               [24]  158         movx    @dptr,a
+      0083C3 22               [24]  159         ret
+                                    160 
+                                    161 ; ----------------------------------------------------------------------------
+                                    162 ; check_save: se (mode,color,bright,speed) != sombra -> atualiza sombra e grava
+                                    163 ; Preserva A, PSW, DPTR, R3, R5, R7 (do banco ativo).
+                                    164 ; ----------------------------------------------------------------------------
+      0083C4                        165 check_save:
+      0083C4 C0 E0            [24]  166         push    acc
+      0083C6 C0 D0            [24]  167         push    psw
+      0083C8 C0 82            [24]  168         push    dpl
+      0083CA C0 83            [24]  169         push    dph
+      0083CC EB               [12]  170         mov     a,r3
+      0083CD C0 E0            [24]  171         push    acc
+      0083CF ED               [12]  172         mov     a,r5
+      0083D0 C0 E0            [24]  173         push    acc
+      0083D2 EF               [12]  174         mov     a,r7
+      0083D3 C0 E0            [24]  175         push    acc
+      0083D5 90 08 F4         [24]  176         mov     dptr,#SH_FLAG
+      0083D8 E0               [24]  177         movx    a,@dptr
+      0083D9 70 03            [24]  178         jnz     cs1
+      0083DB 02r84r53         [24]  179 fardone: ljmp   done
+      0083DE 90 08 F0         [24]  180 cs1:    mov     dptr,#SH_MODE
+      0083E1 E0               [24]  181         movx    a,@dptr
+      0083E2 B5 76 11         [24]  182         cjne    a,MODE,changed
+      0083E5 A3               [24]  183         inc     dptr
+      0083E6 E0               [24]  184         movx    a,@dptr
+      0083E7 B5 5A 0C         [24]  185         cjne    a,COLOR,changed
+      0083EA A3               [24]  186         inc     dptr
+      0083EB E0               [24]  187         movx    a,@dptr
+      0083EC B5 7A 07         [24]  188         cjne    a,BRIGHT,changed
+      0083EF A3               [24]  189         inc     dptr
+      0083F0 E0               [24]  190         movx    a,@dptr
+      0083F1 B5 77 02         [24]  191         cjne    a,SPEED,changed
+      0083F4 80 E5            [24]  192         sjmp    fardone
+      0083F6                        193 changed:
+      0083F6 E5 76            [12]  194         mov     a,MODE              ; modos transitórios (>= 0x14) não salvam
+      0083F8 C3               [12]  195         clr     c
+      0083F9 94 14            [12]  196         subb    a,#0x14
+      0083FB 50 DE            [24]  197         jnc     fardone
+      0083FD 90 08 F0         [24]  198         mov     dptr,#SH_MODE
+      008400 E5 76            [12]  199         mov     a,MODE
+      008402 F0               [24]  200         movx    @dptr,a
+      008403 A3               [24]  201         inc     dptr
+      008404 E5 5A            [12]  202         mov     a,COLOR
+      008406 F0               [24]  203         movx    @dptr,a
+      008407 A3               [24]  204         inc     dptr
+      008408 E5 7A            [12]  205         mov     a,BRIGHT
+      00840A F0               [24]  206         movx    @dptr,a
+      00840B A3               [24]  207         inc     dptr
+      00840C E5 77            [12]  208         mov     a,SPEED
+      00840E F0               [24]  209         movx    @dptr,a
+                                    210         ; grava
+      00840F 7F D0            [12]  211         mov     r7,#SECT
+      008411 12 7F 93         [24]  212         lcall   FW_ERASE
+      008414 7B A5            [12]  213         mov     r3,#MAGIC
+      008416 7D 00            [12]  214         mov     r5,#0
+      008418 7F D0            [12]  215         mov     r7,#SECT
+      00841A 12 7E CA         [24]  216         lcall   FW_PROG
+      00841D AB 76            [24]  217         mov     r3,MODE
+      00841F 7D 01            [12]  218         mov     r5,#1
+      008421 7F D0            [12]  219         mov     r7,#SECT
+      008423 12 7E CA         [24]  220         lcall   FW_PROG
+      008426 AB 5A            [24]  221         mov     r3,COLOR
+      008428 7D 02            [12]  222         mov     r5,#2
+      00842A 7F D0            [12]  223         mov     r7,#SECT
+      00842C 12 7E CA         [24]  224         lcall   FW_PROG
+      00842F AB 7A            [24]  225         mov     r3,BRIGHT
+      008431 7D 03            [12]  226         mov     r5,#3
+      008433 7F D0            [12]  227         mov     r7,#SECT
+      008435 12 7E CA         [24]  228         lcall   FW_PROG
+      008438 AB 77            [24]  229         mov     r3,SPEED
+      00843A 7D 04            [12]  230         mov     r5,#4
+      00843C 7F D0            [12]  231         mov     r7,#SECT
+      00843E 12 7E CA         [24]  232         lcall   FW_PROG
+      008441 E5 76            [12]  233         mov     a,MODE
+      008443 25 5A            [12]  234         add     a,COLOR
+      008445 25 7A            [12]  235         add     a,BRIGHT
+      008447 25 77            [12]  236         add     a,SPEED
+      008449 24 5A            [12]  237         add     a,#0x5a
+      00844B FB               [12]  238         mov     r3,a
+      00844C 7D 05            [12]  239         mov     r5,#5
+      00844E 7F D0            [12]  240         mov     r7,#SECT
+      008450 12 7E CA         [24]  241         lcall   FW_PROG
+      008453                        242 done:
+      008453 D0 E0            [24]  243         pop     acc
+      008455 FF               [12]  244         mov     r7,a
+      008456 D0 E0            [24]  245         pop     acc
+      008458 FD               [12]  246         mov     r5,a
+      008459 D0 E0            [24]  247         pop     acc
+      00845B FB               [12]  248         mov     r3,a
+      00845C D0 83            [24]  249         pop     dph
+      00845E D0 82            [24]  250         pop     dpl
+      008460 D0 D0            [24]  251         pop     psw
+      008462 D0 E0            [24]  252         pop     acc
+      008464 22               [24]  253         ret
+                                    254 
+                                    255 ; ----------------------------------------------------------------------------
+                                    256 ; inits por modo (copiadas do handler de Fn, FUN_38b6)
+                                    257 ; ----------------------------------------------------------------------------
+      008465                        258 init_m1:
+      008465 75 5F FF         [24]  259         mov     0x5f,#0xff
+      008468 75 60 E0         [24]  260         mov     0x60,#0xe0
+      00846B 75 61 C4         [24]  261         mov     0x61,#0xc4
+      00846E 75 62 A8         [24]  262         mov     0x62,#0xa8
+      008471 75 63 8C         [24]  263         mov     0x63,#0x8c
+      008474 75 64 70         [24]  264         mov     0x64,#0x70
+      008477 75 65 54         [24]  265         mov     0x65,#0x54
+      00847A 75 66 38         [24]  266         mov     0x66,#0x38
+      00847D 75 67 1C         [24]  267         mov     0x67,#0x1c
+      008480 75 68 00         [24]  268         mov     0x68,#0
+      008483 75 1D 00         [24]  269         mov     0x1d,#0
+      008486 75 1C 00         [24]  270         mov     0x1c,#0
+      008489 22               [24]  271         ret
+                                    272 
+      00848A                        273 init_m6:
+      00848A 75 5E 00         [24]  274         mov     0x5e,#0
+      00848D 75 1C 00         [24]  275         mov     0x1c,#0
+      008490 75 75 00         [24]  276         mov     0x75,#0
+      008493 75 5F F2         [24]  277         mov     0x5f,#0xf2
+      008496 75 60 E7         [24]  278         mov     0x60,#0xe7
+      008499 75 61 DC         [24]  279         mov     0x61,#0xdc
+      00849C 75 62 D1         [24]  280         mov     0x62,#0xd1
+      00849F 75 63 C6         [24]  281         mov     0x63,#0xc6
+      0084A2 75 64 BB         [24]  282         mov     0x64,#0xbb
+      0084A5 75 65 B0         [24]  283         mov     0x65,#0xb0
+      0084A8 75 66 A5         [24]  284         mov     0x66,#0xa5
+      0084AB 75 67 9A         [24]  285         mov     0x67,#0x9a
+      0084AE 75 68 8F         [24]  286         mov     0x68,#0x8f
+      0084B1 75 69 84         [24]  287         mov     0x69,#0x84
+      0084B4 75 6A 79         [24]  288         mov     0x6a,#0x79
+      0084B7 75 6B 6E         [24]  289         mov     0x6b,#0x6e
+      0084BA 75 6C 63         [24]  290         mov     0x6c,#0x63
+      0084BD 75 6D 58         [24]  291         mov     0x6d,#0x58
+      0084C0 75 6E 4D         [24]  292         mov     0x6e,#0x4d
+      0084C3 75 6F 42         [24]  293         mov     0x6f,#0x42
+      0084C6 75 70 37         [24]  294         mov     0x70,#0x37
+      0084C9 75 71 2C         [24]  295         mov     0x71,#0x2c
+      0084CC 75 72 21         [24]  296         mov     0x72,#0x21
+      0084CF 75 73 16         [24]  297         mov     0x73,#0x16
+      0084D2 75 74 0B         [24]  298         mov     0x74,#0x0b
+      0084D5 75 0C 00         [24]  299         mov     0x0c,#0
+      0084D8 75 0D 00         [24]  300         mov     0x0d,#0
+      0084DB 75 0E 00         [24]  301         mov     0x0e,#0
+      0084DE 22               [24]  302         ret
+                                    303 
+                                    304 ; modo 8: cada tecla com uma cor fixa ciclando 7 cores (buffers XDATA 0x0000 / 0x0095 / 0x012A)
+      0084DF                        305 init_m8:
+      0084DF 7A 00            [12]  306         mov     r2,#0
+      0084E1                        307 m8loop:
+      0084E1 E5 1C            [12]  308         mov     a,0x1c
+      0084E3 75 F0 03         [24]  309         mov     b,#3
+      0084E6 A4               [48]  310         mul     ab
+      0084E7 FE               [12]  311         mov     r6,a
+      0084E8 90r85r29         [24]  312         mov     dptr,#m8tab
+      0084EB EE               [12]  313         mov     a,r6
+      0084EC 93               [24]  314         movc    a,@a+dptr
+      0084ED FF               [12]  315         mov     r7,a
+      0084EE EA               [12]  316         mov     a,r2
+      0084EF F5 82            [12]  317         mov     dpl,a
+      0084F1 75 83 00         [24]  318         mov     dph,#0
+      0084F4 EF               [12]  319         mov     a,r7
+      0084F5 F0               [24]  320         movx    @dptr,a
+      0084F6 90r85r2A         [24]  321         mov     dptr,#m8tab+1
+      0084F9 EE               [12]  322         mov     a,r6
+      0084FA 93               [24]  323         movc    a,@a+dptr
+      0084FB FF               [12]  324         mov     r7,a
+      0084FC EA               [12]  325         mov     a,r2
+      0084FD 24 95            [12]  326         add     a,#0x95
+      0084FF F5 82            [12]  327         mov     dpl,a
+      008501 E4               [12]  328         clr     a
+      008502 34 00            [12]  329         addc    a,#0
+      008504 F5 83            [12]  330         mov     dph,a
+      008506 EF               [12]  331         mov     a,r7
+      008507 F0               [24]  332         movx    @dptr,a
+      008508 90r85r2B         [24]  333         mov     dptr,#m8tab+2
+      00850B EE               [12]  334         mov     a,r6
+      00850C 93               [24]  335         movc    a,@a+dptr
+      00850D FF               [12]  336         mov     r7,a
+      00850E EA               [12]  337         mov     a,r2
+      00850F 24 2A            [12]  338         add     a,#0x2a
+      008511 F5 82            [12]  339         mov     dpl,a
+      008513 E4               [12]  340         clr     a
+      008514 34 01            [12]  341         addc    a,#1
+      008516 F5 83            [12]  342         mov     dph,a
+      008518 EF               [12]  343         mov     a,r7
+      008519 F0               [24]  344         movx    @dptr,a
+      00851A 05 1C            [12]  345         inc     0x1c
+      00851C E5 1C            [12]  346         mov     a,0x1c
+      00851E B4 07 03         [24]  347         cjne    a,#7,m8n
+      008521 75 1C 00         [24]  348         mov     0x1c,#0
+      008524 0A               [12]  349 m8n:    inc     r2
+      008525 BA 8A B9         [24]  350         cjne    r2,#0x8a,m8loop
+      008528 22               [24]  351         ret
+      008529 FF FF 00 FF 00 FF 00   352 m8tab:  .db 0xff,0xff,0x00, 0xff,0x00,0xff, 0x00,0xff,0xff, 0xff,0x00,0x00, 0x00,0xff,0x00, 0x00,0x00,0xff, 0x00,0x00,0x00
+             FF FF FF 00 00 00 FF
+             00 00 00 FF 00 00 00
+      00853E FF                     353         .db 0xff            ; marcador de fim (só pra facilitar achar o blob)
